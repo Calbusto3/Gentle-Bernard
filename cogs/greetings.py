@@ -7,6 +7,8 @@ from discord.ext import commands
 import random
 
 from utils.config import config
+from utils.permissions import is_admin
+from utils.db import ensure_db
 
 
 WELCOME_TITLES = [
@@ -63,17 +65,91 @@ class Greetings(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    async def _get_settings(self, guild_id: int) -> tuple[bool, Optional[int], Optional[int]]:
+        conn = await ensure_db()
+        async with conn.execute(
+            "SELECT enabled, welcome_channel_id, goodbye_channel_id FROM welcome_settings WHERE guild_id=?",
+            (guild_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        await conn.close()
+        if not row:
+            # Default: enabled, fallback to config
+            return True, getattr(config, "welcome_channel_id", None), getattr(config, "goodbye_channel_id", None)
+        enabled, w, g = row
+        return bool(enabled), int(w) if w else getattr(config, "welcome_channel_id", None), int(g) if g else getattr(config, "goodbye_channel_id", None)
+
     def _get_channel(self, guild: discord.Guild, channel_id: Optional[int]) -> Optional[discord.TextChannel]:
         if not channel_id:
             return None
         ch = guild.get_channel(channel_id)
         return ch if isinstance(ch, discord.TextChannel) else None
 
+    # -------- Admin commands --------
+    @commands.command(name="welcome_on", help="Activer les messages d'arrivée et de départ (admin)")
+    @is_admin()
+    async def welcome_on(self, ctx: commands.Context):
+        conn = await ensure_db()
+        await conn.execute(
+            "INSERT INTO welcome_settings(guild_id, enabled, welcome_channel_id, goodbye_channel_id) VALUES(?,?,NULL,NULL) ON CONFLICT(guild_id) DO UPDATE SET enabled=1, updated_at=CURRENT_TIMESTAMP",
+            (ctx.guild.id, 1),  # type: ignore[union-attr]
+        )
+        await conn.commit()
+        await conn.close()
+        await ctx.send("Système de bienvenue activé.")
+
+    @commands.command(name="welcome_off", help="Désactiver les messages d'arrivée et de départ (admin)")
+    @is_admin()
+    async def welcome_off(self, ctx: commands.Context):
+        conn = await ensure_db()
+        await conn.execute(
+            "INSERT INTO welcome_settings(guild_id, enabled, welcome_channel_id, goodbye_channel_id) VALUES(?,?,NULL,NULL) ON CONFLICT(guild_id) DO UPDATE SET enabled=0, updated_at=CURRENT_TIMESTAMP",
+            (ctx.guild.id, 0),  # type: ignore[union-attr]
+        )
+        await conn.commit()
+        await conn.close()
+        await ctx.send("Système de bienvenue désactivé.")
+
+    @commands.command(name="welcome_arrive_set", help="Définir le salon d'arrivée (admin)")
+    @is_admin()
+    async def welcome_arrive_set(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+        channel = channel or (ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None)
+        if not channel:
+            await ctx.send("Spécifiez un salon texte.")
+            return
+        conn = await ensure_db()
+        await conn.execute(
+            "INSERT INTO welcome_settings(guild_id, enabled, welcome_channel_id, goodbye_channel_id) VALUES(?,1,?,NULL) ON CONFLICT(guild_id) DO UPDATE SET welcome_channel_id=excluded.welcome_channel_id, updated_at=CURRENT_TIMESTAMP",
+            (ctx.guild.id, channel.id),  # type: ignore[union-attr]
+        )
+        await conn.commit()
+        await conn.close()
+        await ctx.send(f"Salon d'arrivée défini sur {channel.mention}.")
+
+    @commands.command(name="welcome_depart_set", help="Définir le salon de départ (admin)")
+    @is_admin()
+    async def welcome_depart_set(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+        channel = channel or (ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None)
+        if not channel:
+            await ctx.send("Spécifiez un salon texte.")
+            return
+        conn = await ensure_db()
+        await conn.execute(
+            "INSERT INTO welcome_settings(guild_id, enabled, welcome_channel_id, goodbye_channel_id) VALUES(?,1,NULL,?) ON CONFLICT(guild_id) DO UPDATE SET goodbye_channel_id=excluded.goodbye_channel_id, updated_at=CURRENT_TIMESTAMP",
+            (ctx.guild.id, channel.id),  # type: ignore[union-attr]
+        )
+        await conn.commit()
+        await conn.close()
+        await ctx.send(f"Salon de départ défini sur {channel.mention}.")
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         if not member.guild:
             return
-        ch = self._get_channel(member.guild, config.welcome_channel_id)
+        enabled, w_id, _ = await self._get_settings(member.guild.id)
+        if not enabled:
+            return
+        ch = self._get_channel(member.guild, w_id)
         if not ch:
             return
         try:
@@ -86,7 +162,10 @@ class Greetings(commands.Cog):
     async def on_member_remove(self, member: discord.Member):
         if not member.guild:
             return
-        ch = self._get_channel(member.guild, config.goodbye_channel_id)
+        enabled, _, g_id = await self._get_settings(member.guild.id)
+        if not enabled:
+            return
+        ch = self._get_channel(member.guild, g_id)
         if not ch:
             return
         try:

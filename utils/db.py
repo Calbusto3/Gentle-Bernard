@@ -68,6 +68,14 @@ async def migrate(conn: aiosqlite.Connection) -> None:
             active INTEGER NOT NULL DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        -- Welcome/Goodbye settings
+        CREATE TABLE IF NOT EXISTS welcome_settings (
+            guild_id INTEGER PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            welcome_channel_id INTEGER,
+            goodbye_channel_id INTEGER,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
         """
     )
     await conn.commit()
