@@ -176,7 +176,126 @@ class VoiceTemp(commands.Cog):
             return
         _, guild_id, hub_cat, voice_cat, hub_channel_id, name, perms_mask = row
         state = HubConfigState(guild_id=guild_id, hub_category_id=int(hub_cat) if hub_cat else None, voice_category_id=int(voice_cat) if voice_cat else None, name=name, perms_mask=int(perms_mask))
-        await self._run_hub_wizard(ctx, state)
+
+        # Build initial modify menu embed
+        def build_modify_embed(s: HubConfigState) -> discord.Embed:
+            e = discord.Embed(title=f"Modifier le hub: {s.name}", color=discord.Color.blurple())
+            e.add_field(name="Nom actuel", value=s.name or "(non défini)")
+            e.add_field(name="Catégorie hub", value=f"<#{s.hub_category_id}>" if s.hub_category_id else "(n/a)")
+            e.add_field(name="Catégorie des salons", value=f"<#{s.voice_category_id}>" if s.voice_category_id else "(n/a)")
+            lines = []
+            for flag, label in ALL_FLAGS:
+                lines.append(f"- {label}: {'ON' if has_flag(s.perms_mask, flag) else 'OFF'}")
+            e.add_field(name="Permissions propriétaire", value="\n".join(lines), inline=False)
+            e.set_footer(text="Gentle Bernard")
+            return e
+
+        class ModifyMenu(discord.ui.View):
+            def __init__(self, outer: 'VoiceTemp', hub_id: int, hub_channel_id: Optional[int], s: HubConfigState):
+                super().__init__(timeout=300)
+                self.outer = outer
+                self.hub_id = hub_id
+                self.hub_channel_id = int(hub_channel_id) if hub_channel_id else None
+                self.state = s
+                self.add_item(self._btn_rename())
+                self.add_item(self._btn_perms())
+                self.add_item(self._btn_close())
+
+            def _btn_close(self) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    await inter.response.edit_message(view=None)
+                b = discord.ui.Button(label="Fermer", style=discord.ButtonStyle.secondary)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+
+            def _btn_rename(self) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    # Ask for new name via plain message input, remove buttons
+                    prompt = discord.Embed(title="Nouveau nom du hub", description="Envoyez le nouveau nom dans ce salon (90 caractères max).", color=discord.Color.green())
+                    await inter.response.edit_message(embed=prompt, view=None)
+                    author_id = inter.user.id
+                    channel = inter.channel
+                    if not channel or not isinstance(channel, discord.abc.Messageable):
+                        return
+                    def check(m: discord.Message) -> bool:
+                        return m.author.id == author_id and m.channel.id == channel.id
+                    try:
+                        m = await self.outer.bot.wait_for('message', timeout=120, check=check)
+                        new_name = m.content.strip()[:90]
+                        try:
+                            await m.delete()
+                        except Exception:
+                            pass
+                        # Persist to DB
+                        conn2 = await ensure_db()
+                        await conn2.execute("UPDATE voctemp_hubs SET name=? WHERE id=? AND guild_id=?", (new_name, self.hub_id, inter.guild.id if inter.guild else 0))
+                        await conn2.commit()
+                        await conn2.close()
+                        self.state.name = new_name
+                        # Rename actual hub voice channel if exists
+                        if inter.guild and self.hub_channel_id:
+                            ch = inter.guild.get_channel(self.hub_channel_id)
+                            if isinstance(ch, discord.VoiceChannel):
+                                try:
+                                    await ch.edit(name=new_name)
+                                except Exception:
+                                    pass
+                        await channel.send(embed=success_embed("Nom mis à jour", f"Nouveau nom: {discord.utils.escape_markdown(new_name)}"))
+                        # Restore menu
+                        await channel.send(embed=build_modify_embed(self.state), view=ModifyMenu(self.outer, self.hub_id, self.hub_channel_id, self.state))
+                    except asyncio.TimeoutError:
+                        await channel.send(embed=error_embed("Temps écoulé. Relancez la commande pour réessayer."))
+                b = discord.ui.Button(label="Modifier le nom", style=discord.ButtonStyle.primary)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+
+            def _btn_perms(self) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    # Show toggle view for permissions
+                    await inter.response.edit_message(embed=build_perms_embed(self.state), view=PermsToggleView(self.outer, self.state, self.hub_id, self.hub_channel_id))
+                b = discord.ui.Button(label="Modifier les permissions", style=discord.ButtonStyle.secondary)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+
+        class PermsToggleView(discord.ui.View):
+            def __init__(self, outer: 'VoiceTemp', s: HubConfigState, hub_id: int, hub_channel_id: Optional[int]):
+                super().__init__(timeout=300)
+                self.outer = outer
+                self.state = s
+                self.hub_id = hub_id
+                self.hub_channel_id = hub_channel_id
+                for flag, label in ALL_FLAGS:
+                    self.add_item(self._make(flag, label))
+                self.add_item(self._confirm())
+                self.add_item(self._cancel())
+
+            def _make(self, flag: int, label: str) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    self.state.perms_mask = toggle_flag(self.state.perms_mask, flag)
+                    await inter.response.edit_message(embed=build_perms_embed(self.state), view=PermsToggleView(self.outer, self.state, self.hub_id, self.hub_channel_id))
+                b = discord.ui.Button(label=label + (" (ON)" if has_flag(self.state.perms_mask, flag) else " (OFF)"), style=discord.ButtonStyle.success if has_flag(self.state.perms_mask, flag) else discord.ButtonStyle.secondary)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+
+            def _confirm(self) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    conn2 = await ensure_db()
+                    await conn2.execute("UPDATE voctemp_hubs SET perms_mask=? WHERE id=? AND guild_id=?", (self.state.perms_mask, self.hub_id, inter.guild.id if inter.guild else 0))
+                    await conn2.commit()
+                    await conn2.close()
+                    await inter.response.edit_message(embed=success_embed("Permissions mises à jour", "Les permissions du propriétaire ont été enregistrées."), view=ModifyMenu(self.outer, self.hub_id, self.hub_channel_id, self.state))
+                b = discord.ui.Button(label="Enregistrer", style=discord.ButtonStyle.success)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+
+            def _cancel(self) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    await inter.response.edit_message(embed=build_modify_embed(self.state), view=ModifyMenu(self.outer, self.hub_id, self.hub_channel_id, self.state))
+                b = discord.ui.Button(label="Annuler", style=discord.ButtonStyle.secondary)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+
+        await ctx.send(embed=build_modify_embed(state), view=ModifyMenu(self, hub_id, hub_channel_id, state))
 
     async def _run_hub_wizard(self, ctx: commands.Context, state: HubConfigState):
         author_id = ctx.author.id
