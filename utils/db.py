@@ -51,6 +51,8 @@ async def migrate(conn: aiosqlite.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             guild_id INTEGER NOT NULL,
             category_id INTEGER NOT NULL,
+            -- optional target category for created voice rooms (added in v1.2)
+            target_category_id INTEGER,
             hub_channel_id INTEGER NOT NULL,
             name TEXT NOT NULL,
             perms_mask INTEGER NOT NULL DEFAULT 0,
@@ -79,6 +81,16 @@ async def migrate(conn: aiosqlite.Connection) -> None:
         """
     )
     await conn.commit()
+    # Ensure target_category_id exists for older databases
+    try:
+        async with conn.execute("PRAGMA table_info(voctemp_hubs)") as cur:
+            cols = [row[1] async for row in cur]
+        if "target_category_id" not in cols:
+            await conn.execute("ALTER TABLE voctemp_hubs ADD COLUMN target_category_id INTEGER")
+            await conn.commit()
+    except Exception:
+        # Ignore migration errors to avoid blocking startup; subsequent code guards for NULLs
+        pass
 
 
 async def next_counter(conn: aiosqlite.Connection, name: str) -> int:

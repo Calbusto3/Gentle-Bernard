@@ -41,21 +41,26 @@ def toggle_flag(mask: int, flag: int) -> int:
 @dataclass
 class HubConfigState:
     guild_id: int
-    category_id: Optional[int] = None
+    hub_category_id: Optional[int] = None
+    voice_category_id: Optional[int] = None
     name: Optional[str] = None
     perms_mask: int = 0
 
 
 class CategorySelect(discord.ui.ChannelSelect):
-    def __init__(self, state: HubConfigState):
+    def __init__(self, state: HubConfigState, target: str = "hub"):
         super().__init__(channel_types=[discord.ChannelType.category], placeholder="Choisissez une catégorie")
         self.state = state
+        self.target = target  # 'hub' or 'voice'
 
     async def callback(self, interaction: discord.Interaction):
         if not self.values:
             await interaction.response.send_message("Sélection invalide.", ephemeral=True)
             return
-        self.state.category_id = self.values[0].id
+        if self.target == "hub":
+            self.state.hub_category_id = self.values[0].id
+        else:
+            self.state.voice_category_id = self.values[0].id
         await interaction.response.send_message("Catégorie sélectionnée.", ephemeral=True)
 
 
@@ -108,8 +113,9 @@ class PermsToggles(discord.ui.View):
 
 def build_config_embed(state: HubConfigState) -> discord.Embed:
     e = discord.Embed(title="Configuration du hub temporaire", color=discord.Color.green())
-    e.add_field(name="Catégorie", value=f"<#{state.category_id}>" if state.category_id else "(à choisir)")
     e.add_field(name="Nom", value=state.name or "(à définir)")
+    e.add_field(name="Catégorie du hub", value=f"<#{state.hub_category_id}>" if state.hub_category_id else "(à choisir)")
+    e.add_field(name="Catégorie des salons vocaux", value=f"<#{state.voice_category_id}>" if state.voice_category_id else "(à choisir)")
     e.set_footer(text="Gentle Bernard")
     return e
 
@@ -124,51 +130,7 @@ def build_perms_embed(state: HubConfigState) -> discord.Embed:
 
 
 class HubWizard(discord.ui.View):
-    def __init__(self, state: HubConfigState):
-        super().__init__(timeout=600)
-        self.state = state
-        self.add_item(CategorySelect(state))
-
-    @discord.ui.button(label="Définir le nom", style=discord.ButtonStyle.primary)
-    async def set_name(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
-        await interaction.response.send_modal(NameModal(self.state))
-
-    @discord.ui.button(label="Définir permissions", style=discord.ButtonStyle.secondary)
-    async def set_perms(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
-        await interaction.response.edit_message(embed=build_perms_embed(self.state), view=PermsToggles(self.state))
-
-    @discord.ui.button(label="Revenir", style=discord.ButtonStyle.secondary)
-    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
-        await interaction.response.edit_message(embed=build_config_embed(self.state), view=self)
-
-    @discord.ui.button(label="Confirmer et créer", style=discord.ButtonStyle.success)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
-        if not self.state.category_id or not self.state.name:
-            await interaction.response.send_message("Veuillez choisir une catégorie et un nom.", ephemeral=True)
-            return
-        guild = interaction.guild
-        if not guild:
-            await interaction.response.send_message("Contexte invalide.", ephemeral=True)
-            return
-        category = guild.get_channel(self.state.category_id)
-        if not isinstance(category, discord.CategoryChannel):
-            await interaction.response.send_message("Catégorie invalide.", ephemeral=True)
-            return
-        # Créer le channel vocal hub
-        try:
-            hub = await guild.create_voice_channel(self.state.name, category=category, reason="Création hub voc temp")
-        except discord.Forbidden:
-            await interaction.response.send_message("Permissions insuffisantes pour créer le salon.", ephemeral=True)
-            return
-        # Persister
-        conn = await ensure_db()
-        await conn.execute(
-            "INSERT INTO voctemp_hubs(guild_id, category_id, hub_channel_id, name, perms_mask) VALUES(?,?,?,?,?)",
-            (guild.id, category.id, hub.id, self.state.name, self.state.perms_mask),
-        )
-        await conn.commit()
-        await conn.close()
-        await interaction.response.edit_message(embed=success_embed("Hub créé", f"{hub.mention}"), view=None)
+    pass  # Placeholder: legacy wizard removed in favor of multi-étapes
 
 
 @dataclass
@@ -196,8 +158,7 @@ class VoiceTemp(commands.Cog):
     @is_admin()
     async def voctemp(self, ctx: commands.Context):
         state = HubConfigState(guild_id=ctx.guild.id)  # type: ignore[union-attr]
-        view = HubWizard(state)
-        await ctx.send(embed=build_config_embed(state), view=view)
+        await self._run_hub_wizard(ctx, state)
 
     # ---------------- Admin (prefix): +voctempmodif {id} ----------------
     @commands.command(name="voctempmodif", help="Modifier un hub voc temp: +voctempmodif {id}")
@@ -205,7 +166,7 @@ class VoiceTemp(commands.Cog):
     async def voctempmodif(self, ctx: commands.Context, hub_id: int):
         conn = await ensure_db()
         async with conn.execute(
-            "SELECT id, guild_id, category_id, hub_channel_id, name, perms_mask FROM voctemp_hubs WHERE id=? AND guild_id=\n?",
+            "SELECT id, guild_id, category_id, target_category_id, hub_channel_id, name, perms_mask FROM voctemp_hubs WHERE id=? AND guild_id=?",
             (hub_id, ctx.guild.id),  # type: ignore[union-attr]
         ) as cur:
             row = await cur.fetchone()
@@ -213,10 +174,163 @@ class VoiceTemp(commands.Cog):
         if not row:
             await ctx.send(embed=error_embed("Hub introuvable"))
             return
-        _, guild_id, category_id, hub_channel_id, name, perms_mask = row
-        state = HubConfigState(guild_id=guild_id, category_id=category_id, name=name, perms_mask=int(perms_mask))
-        view = HubWizard(state)
-        await ctx.send(embed=build_config_embed(state), view=view)
+        _, guild_id, hub_cat, voice_cat, hub_channel_id, name, perms_mask = row
+        state = HubConfigState(guild_id=guild_id, hub_category_id=int(hub_cat) if hub_cat else None, voice_category_id=int(voice_cat) if voice_cat else None, name=name, perms_mask=int(perms_mask))
+        await self._run_hub_wizard(ctx, state)
+
+    async def _run_hub_wizard(self, ctx: commands.Context, state: HubConfigState):
+        author_id = ctx.author.id
+        channel = ctx.channel
+        # Step 0: Name
+        embed = discord.Embed(title="Définir un nom", description="Comment voulez-vous que le hub vocal soit appelé ?", color=discord.Color.green())
+        msg = await ctx.send(embed=embed)
+        def check_name(m: discord.Message) -> bool:
+            return m.author.id == author_id and m.channel.id == channel.id
+        try:
+            m = await self.bot.wait_for('message', check=check_name, timeout=120)
+            state.name = m.content.strip()[:90]
+            try:
+                await m.delete()
+            except Exception:
+                pass
+        except asyncio.TimeoutError:
+            await msg.edit(embed=error_embed("Temps écoulé. Relancez la commande."), view=None)
+            return
+        # Step 1: Hub category
+        proceed_event = asyncio.Event()
+        class Step1View(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=300)
+                self.add_item(CategorySelect(state, target="hub"))
+                self.add_item(self._next())
+            def _next(self) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    if not state.hub_category_id:
+                        await inter.response.send_message("Sélectionnez une catégorie.", ephemeral=True)
+                        return
+                    proceed_event.set()
+                    await inter.response.defer()
+                b = discord.ui.Button(label="Suivant", style=discord.ButtonStyle.primary)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+        embed = discord.Embed(title="Sélectionnez la catégorie du hub", description="Choisissez la catégorie où votre hub sera situé.", color=discord.Color.green())
+        await msg.edit(embed=embed, view=Step1View())
+        try:
+            await asyncio.wait_for(proceed_event.wait(), timeout=300)
+        except asyncio.TimeoutError:
+            await msg.edit(embed=error_embed("Temps écoulé."), view=None)
+            return
+        # Step 2: Voice category
+        proceed_event = asyncio.Event()
+        class Step2View(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=300)
+                self.add_item(CategorySelect(state, target="voice"))
+                self.add_item(self._back())
+                self.add_item(self._next())
+            def _back(self) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    nonlocal state
+                    # go back to step 1
+                    await inter.response.defer()
+                    await msg.edit(embed=discord.Embed(title="Sélectionnez la catégorie du hub", description="Choisissez la catégorie où votre hub sera situé.", color=discord.Color.green()), view=Step1View())
+                b = discord.ui.Button(label="Retour", style=discord.ButtonStyle.secondary)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+            def _next(self) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    if not state.voice_category_id:
+                        await inter.response.send_message("Sélectionnez une catégorie.", ephemeral=True)
+                        return
+                    proceed_event.set()
+                    await inter.response.defer()
+                b = discord.ui.Button(label="Suivant", style=discord.ButtonStyle.primary)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+        embed = discord.Embed(title="Sélectionnez la catégorie des salons vocaux", description="Choisissez une catégorie où seront créés les salons de discussions.", color=discord.Color.green())
+        await msg.edit(embed=embed, view=Step2View())
+        try:
+            await asyncio.wait_for(proceed_event.wait(), timeout=300)
+        except asyncio.TimeoutError:
+            await msg.edit(embed=error_embed("Temps écoulé."), view=None)
+            return
+        # Step 3: Permissions
+        proceed_event = asyncio.Event()
+        class PermsView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=300)
+                # build toggle buttons
+                for flag, label in ALL_FLAGS:
+                    self.add_item(self._make(flag, label))
+                self.add_item(self._back())
+                self.add_item(self._next())
+            def _make(self, flag: int, label: str) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    state.perms_mask = toggle_flag(state.perms_mask, flag)
+                    await inter.response.edit_message(embed=build_perms_embed(state), view=PermsView())
+                b = discord.ui.Button(label=label + (" (ON)" if has_flag(state.perms_mask, flag) else " (OFF)"), style=discord.ButtonStyle.success if has_flag(state.perms_mask, flag) else discord.ButtonStyle.secondary)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+            def _back(self) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    await inter.response.edit_message(embed=discord.Embed(title="Sélectionnez la catégorie des salons vocaux", description="Choisissez une catégorie où seront créés les salons de discussions.", color=discord.Color.green()), view=Step2View())
+                b = discord.ui.Button(label="Retour", style=discord.ButtonStyle.secondary)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+            def _next(self) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    proceed_event.set()
+                    await inter.response.defer()
+                b = discord.ui.Button(label="Suivant", style=discord.ButtonStyle.primary)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+        await msg.edit(embed=build_perms_embed(state), view=PermsView())
+        try:
+            await asyncio.wait_for(proceed_event.wait(), timeout=300)
+        except asyncio.TimeoutError:
+            await msg.edit(embed=error_embed("Temps écoulé."), view=None)
+            return
+        # Step 4: Recap + Confirm
+        class RecapView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=300)
+                self.add_item(self._back())
+                self.add_item(self._confirm())
+            def _back(self) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    await inter.response.edit_message(embed=build_perms_embed(state), view=PermsView())
+                b = discord.ui.Button(label="Retour", style=discord.ButtonStyle.secondary)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+            def _confirm(self) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    guild = inter.guild
+                    if not guild or not state.hub_category_id or not state.voice_category_id or not state.name:
+                        await inter.response.send_message("Configuration incomplète.", ephemeral=True)
+                        return
+                    hub_cat = guild.get_channel(state.hub_category_id)
+                    if not isinstance(hub_cat, discord.CategoryChannel):
+                        await inter.response.send_message("Catégorie du hub invalide.", ephemeral=True)
+                        return
+                    try:
+                        hub = await guild.create_voice_channel(state.name, category=hub_cat, reason="Création hub voc temp")
+                    except discord.Forbidden:
+                        await inter.response.send_message("Permissions insuffisantes pour créer le salon.", ephemeral=True)
+                        return
+                    conn2 = await ensure_db()
+                    await conn2.execute(
+                        "INSERT INTO voctemp_hubs(guild_id, category_id, target_category_id, hub_channel_id, name, perms_mask) VALUES(?,?,?,?,?,?)",
+                        (guild.id, state.hub_category_id, state.voice_category_id, hub.id, state.name, state.perms_mask),
+                    )
+                    await conn2.commit()
+                    await conn2.close()
+                    await inter.response.edit_message(embed=success_embed("Hub créé", f"{hub.mention}"), view=None)
+                b = discord.ui.Button(label="Confirmer", style=discord.ButtonStyle.success)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+        recap = build_config_embed(state)
+        recap.title = "Récapitulatif"
+        await msg.edit(embed=recap, view=RecapView())
 
     # ---------------- Helpers DB ----------------
     async def get_perms_mask_for_voice(self, guild_id: int, voice_id: int) -> Optional[int]:
@@ -227,7 +341,7 @@ class VoiceTemp(commands.Cog):
         return int(row[0]) if row else None
     async def find_hub_by_channel(self, guild_id: int, channel_id: int) -> Optional[Tuple[int, int, int]]:
         conn = await ensure_db()
-        async with conn.execute("SELECT id, category_id, perms_mask FROM voctemp_hubs WHERE guild_id=? AND hub_channel_id=?", (guild_id, channel_id)) as cur:
+        async with conn.execute("SELECT id, target_category_id, perms_mask FROM voctemp_hubs WHERE guild_id=? AND hub_channel_id=?", (guild_id, channel_id)) as cur:
             row = await cur.fetchone()
         await conn.close()
         if not row:
