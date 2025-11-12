@@ -156,6 +156,8 @@ class VoiceTemp(commands.Cog):
         # {voice_id: { 'pending': Optional[target_id], 'owner_id': int, 'last_proposal_ts': float,
         #              'refuse_count': int, 'cooldown_until': float }}
         self.transfer_state: Dict[int, Dict[str, int | float | None]] = {}
+        # Delayed deletion tasks for empty rooms: {voice_id: task}
+        self.deletion_tasks: Dict[int, asyncio.Task] = {}
 
     async def cog_load(self) -> None:
         # Register persistent control view so buttons survive restarts
@@ -507,6 +509,34 @@ class VoiceTemp(commands.Cog):
         except Exception:
             pass
         return Room(id=0, guild_id=guild.id, hub_id=hub_id, owner_id=owner.id, voice_channel_id=voice.id, text_channel_id=text.id, control_message_id=panel.id, active=1)
+
+    async def _delayed_delete_room(self, guild: discord.Guild, voice_id: int, text_channel_id: Optional[int], room_id: int):
+        try:
+            await asyncio.sleep(60)
+            voice = guild.get_channel(voice_id)
+            # If channel was removed already or has members again, abort
+            if isinstance(voice, discord.VoiceChannel) and len(voice.members) > 0:
+                return
+            # Delete channels if still present/empty
+            try:
+                if text_channel_id:
+                    ch = guild.get_channel(int(text_channel_id))
+                    if isinstance(ch, discord.TextChannel):
+                        await ch.delete(reason="Salon vocal temp vide (timeout)")
+                if isinstance(voice, discord.VoiceChannel):
+                    await voice.delete(reason="Salon vocal temp vide (timeout)")
+            except Exception:
+                pass
+            # Mark inactive in DB
+            conn = await ensure_db()
+            await conn.execute("UPDATE voctemp_rooms SET active=0 WHERE id=?", (room_id,))
+            await conn.commit()
+            await conn.close()
+        finally:
+            # Clear task entry
+            t = self.deletion_tasks.get(voice_id)
+            if t and t.done():
+                self.deletion_tasks.pop(voice_id, None)
 
     def build_control_embed(self, owner: discord.Member, perms_mask: int, voice: discord.VoiceChannel) -> discord.Embed:
         lines = []
@@ -1033,6 +1063,15 @@ class VoiceTemp(commands.Cog):
                 # Créer room
                 await self.create_room(member.guild, hub_id, category_id, member, after.channel.name, perms_mask)
                 return
+            # If joined a temp room, cancel any pending deletion for that room
+            connj = await ensure_db()
+            async with connj.execute("SELECT id FROM voctemp_rooms WHERE guild_id=? AND voice_channel_id=? AND active=1", (member.guild.id, after.channel.id)) as cur:
+                jrow = await cur.fetchone()
+            await connj.close()
+            if jrow and after.channel.id in self.deletion_tasks:
+                task = self.deletion_tasks.pop(after.channel.id, None)
+                if task and not task.done():
+                    task.cancel()
         # Suppression: si quitte un salon temporaire et qu'il devient vide
         if before and before.channel and isinstance(before.channel, discord.VoiceChannel):
             voice = before.channel
@@ -1042,17 +1081,9 @@ class VoiceTemp(commands.Cog):
                 row = await cur.fetchone()
             if row and len(voice.members) == 0:
                 room_id, text_id = row
-                # Supprimer tout
-                try:
-                    if text_id:
-                        ch = member.guild.get_channel(int(text_id))
-                        if isinstance(ch, discord.TextChannel):
-                            await ch.delete(reason="Salon vocal temp vide")
-                    await voice.delete(reason="Salon vocal temp vide")
-                except Exception:
-                    pass
-                await conn.execute("UPDATE voctemp_rooms SET active=0 WHERE id=?", (room_id,))
-                await conn.commit()
+                # Schedule deletion in 60s if not already scheduled
+                if voice.id not in self.deletion_tasks or self.deletion_tasks[voice.id].done():
+                    self.deletion_tasks[voice.id] = asyncio.create_task(self._delayed_delete_room(member.guild, voice.id, int(text_id) if text_id else None, int(room_id)))
             await conn.close()
 
 
