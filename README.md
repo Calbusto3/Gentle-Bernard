@@ -1,6 +1,6 @@
 # Gentle Bernard Bot
 
-Un bot Discord professionnel pour votre serveur, basé sur `discord.py` 2.x.
+Un bot Discord privé, basé sur `discord.py` 2.x.
 
 ## Prérequis
 - Python 3.10+
