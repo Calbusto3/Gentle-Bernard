@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import Optional, Dict, Tuple
+import time
 
 import discord
 from discord.ext import commands
@@ -28,6 +29,9 @@ ALL_FLAGS = [
     (PERM_LIMIT, "limiter"),
     (PERM_TRANSFER, "passer la propriété"),
 ]
+
+# Fixed channel where ownership transfer proposals are posted
+TRANSFER_CHANNEL_ID = 1438229159594692718
 
 
 def has_flag(mask: int, flag: int) -> bool:
@@ -148,6 +152,10 @@ class Room:
 class VoiceTemp(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        # Transfer anti-abuse and pending state per voice_id
+        # {voice_id: { 'pending': Optional[target_id], 'owner_id': int, 'last_proposal_ts': float,
+        #              'refuse_count': int, 'cooldown_until': float }}
+        self.transfer_state: Dict[int, Dict[str, int | float | None]] = {}
 
     async def cog_load(self) -> None:
         # Register persistent control view so buttons survive restarts
@@ -474,7 +482,16 @@ class VoiceTemp(commands.Cog):
         # Créer salon vocal
         voice = await guild.create_voice_channel(f"Salon de {owner.display_name}", category=category, reason="Salon vocal temporaire")
         # Créer salon texte compagnon
-        text = await guild.create_text_channel(f"salon-de-{owner.name}"[:90], category=category, reason="Compagnon salon vocal temp")
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False, send_messages=False),
+            owner: discord.PermissionOverwrite(view_channel=True, send_messages=False),
+        }
+        text = await guild.create_text_channel(
+            f"salon-de-{owner.name}"[:90],
+            category=category,
+            overwrites=overwrites,
+            reason="Compagnon salon vocal temp (panneau visible seulement par le propriétaire)",
+        )
         # Envoyer panneau
         panel = await text.send(content=owner.mention, embed=self.build_control_embed(owner, perms_mask, voice), view=self.ControlPersistentView(self, owner_id=owner.id, perms_mask=perms_mask, voice_id=voice.id), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
         conn = await ensure_db()
@@ -533,6 +550,50 @@ class VoiceTemp(commands.Cog):
                 await inter.response.send_message("Vous devez être dans votre salon vocal pour utiliser ce panneau.", ephemeral=True)
                 return None
             return member
+
+        class _ConfirmActionView(discord.ui.View):
+            def __init__(self, outer_view: 'VoiceTemp.ControlPersistentView', action: str, voice_id: int, target_id: int):
+                super().__init__(timeout=60)
+                self.outer_view = outer_view
+                self.action = action
+                self.voice_id = voice_id
+                self.target_id = target_id
+                self.add_item(self._btn_confirm())
+                self.add_item(self._btn_cancel())
+
+            def _btn_confirm(self) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    if not inter.guild:
+                        await inter.response.send_message("Contexte invalide.", ephemeral=True)
+                        return
+                    owner = await self.outer_view._ensure_owner(inter, self.voice_id)
+                    if not owner:
+                        return
+                    member = inter.guild.get_member(self.target_id)
+                    vc = inter.guild.get_channel(self.voice_id)
+                    if not member or not isinstance(vc, discord.VoiceChannel) or member not in vc.members:
+                        await inter.response.edit_message(content="Le membre n'est pas dans votre salon.", view=None)
+                        return
+                    try:
+                        if self.action == 'kick':
+                            await member.move_to(None, reason="Expulsion du salon vocal temp")
+                        elif self.action == 'mute':
+                            await member.edit(mute=True, reason="Mute salon vocal temp")
+                        elif self.action == 'unmute':
+                            await member.edit(mute=False, reason="Unmute salon vocal temp")
+                        await inter.response.edit_message(content=f"Action {self.action} effectuée pour {member.mention}.", view=None)
+                    except Exception:
+                        await inter.response.edit_message(content="Action impossible.", view=None)
+                b = discord.ui.Button(label="Confirmer", style=discord.ButtonStyle.danger if self.action == 'kick' else discord.ButtonStyle.success)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
+
+            def _btn_cancel(self) -> discord.ui.Button:
+                async def on_click(inter: discord.Interaction):
+                    await inter.response.edit_message(content="Action annulée.", view=None)
+                b = discord.ui.Button(label="Annuler", style=discord.ButtonStyle.secondary)
+                b.callback = on_click  # type: ignore[assignment]
+                return b
 
         def _voice_id_from_message(self, inter: discord.Interaction) -> int:
             try:
@@ -665,16 +726,107 @@ class VoiceTemp(commands.Cog):
             if not isinstance(vc, discord.VoiceChannel):
                 await inter.response.send_message("Salon introuvable.", ephemeral=True)
                 return
-            candidates = [m for m in vc.members if m.id != owner.id]
-            if not candidates:
-                await inter.response.send_message("Aucun candidat dans le salon.", ephemeral=True)
+            # Anti abuse: cooldowns
+            st = self.outer.transfer_state.get(vid) or {'pending': None, 'owner_id': owner.id, 'last_proposal_ts': 0.0, 'refuse_count': 0, 'cooldown_until': 0.0}
+            now = time.time()
+            if now < float(st.get('cooldown_until', 0.0)):
+                await inter.response.send_message("Transfert en cooldown. Réessayez plus tard.", ephemeral=True)
                 return
-            new_owner = candidates[0]
-            conn = await ensure_db()
-            await conn.execute("UPDATE voctemp_rooms SET owner_id=? WHERE guild_id=? AND voice_channel_id=? AND active=1", (new_owner.id, inter.guild.id, vid))
-            await conn.commit()
-            await conn.close()
-            await inter.response.send_message(f"Propriété transférée à {new_owner.mention}", ephemeral=True)
+            if st.get('pending'):
+                await inter.response.send_message("Une proposition est déjà en attente.", ephemeral=True)
+                return
+            # Ask owner to select target
+            class _SelectTransferTarget(discord.ui.View):
+                def __init__(self, parent_view: 'VoiceTemp.ControlPersistentView', voice_id: int):
+                    super().__init__(timeout=60)
+                    self.parent_view = parent_view
+                    self.voice_id = voice_id
+                    self.add_item(self._make_select())
+                def _make_select(self) -> discord.ui.UserSelect:
+                    select = discord.ui.UserSelect(min_values=1, max_values=1)
+                    async def on_select(i: discord.Interaction):
+                        user = select.values[0]
+                        if not i.guild:
+                            await i.response.send_message("Contexte invalide.", ephemeral=True)
+                            return
+                        target = i.guild.get_member(user.id)
+                        if not target or target.id == owner.id or target not in vc.members:
+                            await i.response.send_message("Cible invalide.", ephemeral=True)
+                            return
+                        # 30s between different proposals
+                        if now - float(st.get('last_proposal_ts', 0.0)) < 30 and st.get('last_target_id') != target.id:
+                            await i.response.send_message("Attendez 30 secondes avant une nouvelle proposition à une autre personne.", ephemeral=True)
+                            return
+                        # Create proposal message in the fixed transfer channel pinging target
+                        ch = i.guild.get_channel(TRANSFER_CHANNEL_ID)
+                        if not isinstance(ch, discord.TextChannel):
+                            await i.response.send_message("Salon de transfert introuvable.", ephemeral=True)
+                            return
+                        embed = discord.Embed(title="Proposition de transfert de propriété", description=f"{target.mention}\n{owner.mention} souhaite vous transférer la propriété du salon \"{vc.name}\".", color=discord.Color.blurple())
+                        embed.set_footer(text="Expire dans 60 secondes")
+                        # Build accept/refuse view only for target
+                        class _AcceptRefuse(discord.ui.View):
+                            def __init__(self):
+                                super().__init__(timeout=60)
+                                self.message = None
+                            async def interaction_check(self, it: discord.Interaction) -> bool:
+                                return it.user.id == target.id
+                            @discord.ui.button(label="Accepter", style=discord.ButtonStyle.success)
+                            async def accept(self, it: discord.Interaction, b: discord.ui.Button):  # type: ignore[override]
+                                # Update DB owner
+                                conn = await ensure_db()
+                                await conn.execute("UPDATE voctemp_rooms SET owner_id=? WHERE guild_id=? AND voice_channel_id=? AND active=1", (target.id, it.guild.id, vid))
+                                await conn.commit()
+                                await conn.close()
+                                # Update panel visibility: remove old owner, add new owner
+                                try:
+                                    await ch.set_permissions(owner, view_channel=False)
+                                    await ch.set_permissions(target, view_channel=True, send_messages=False)
+                                except Exception:
+                                    pass
+                                # Clear state
+                                st['pending'] = None
+                                st['refuse_count'] = 0
+                                st['last_proposal_ts'] = time.time()
+                                st['last_target_id'] = target.id
+                                self.parent_view.outer.transfer_state[vid] = st  # type: ignore[index]
+                                # Acknowledge
+                                await it.response.edit_message(embed=discord.Embed(title="Propriété acceptée", description=f"{target.mention} a accepté la propriété de \"{vc.name}\".", color=discord.Color.green()), view=None)
+                            @discord.ui.button(label="Refuser", style=discord.ButtonStyle.danger)
+                            async def refuse(self, it: discord.Interaction, b: discord.ui.Button):  # type: ignore[override]
+                                st['pending'] = None
+                                st['refuse_count'] = int(st.get('refuse_count', 0)) + 1
+                                st['last_proposal_ts'] = time.time()
+                                st['last_target_id'] = target.id
+                                # Cooldowns: 1 min after any refusal; 2h if >=3 refusals consécutifs
+                                cd = 60.0
+                                if int(st['refuse_count']) >= 3:
+                                    cd = 2 * 60 * 60
+                                    st['refuse_count'] = 0  # reset after long cooldown
+                                st['cooldown_until'] = time.time() + cd
+                                self.parent_view.outer.transfer_state[vid] = st  # type: ignore[index]
+                                await it.response.edit_message(embed=discord.Embed(title="Refusé", description=f"{target.mention} a refusé la propriété de \"{vc.name}\".", color=discord.Color.red()), view=None)
+                            async def on_timeout(self) -> None:
+                                try:
+                                    await self.message.edit(embed=discord.Embed(title="Transfert expiré", description="Aucune réponse.", color=discord.Color.orange()), view=None)
+                                except Exception:
+                                    pass
+                                st['pending'] = None
+                                st['cooldown_until'] = time.time() + 60  # small cooldown after expiry
+                                self.parent_view.outer.transfer_state[vid] = st  # type: ignore[index]
+                        view = _AcceptRefuse()
+                        msg = await ch.send(content=target.mention, embed=embed, view=view, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+                        view.message = msg  # type: ignore[attr-defined]
+                        # Mark pending
+                        st['pending'] = target.id
+                        st['owner_id'] = owner.id
+                        st['last_proposal_ts'] = now
+                        st['last_target_id'] = target.id
+                        self.parent_view.outer.transfer_state[vid] = st  # type: ignore[index]
+                        await i.response.send_message("Proposition envoyée.", ephemeral=True)
+                    select.callback = on_select  # type: ignore[assignment]
+                    return select
+            await inter.response.send_message(view=_SelectTransferTarget(self, vid), ephemeral=True, content="Choisissez un membre à qui proposer la propriété")
 
         # ----- Actions sur membres: Kick / Mute / Unmute -----
         class _SelectMemberView(discord.ui.View):
@@ -700,16 +852,12 @@ class VoiceTemp(commands.Cog):
                     if not isinstance(vc, discord.VoiceChannel) or member not in vc.members:
                         await inter.response.send_message("Le membre n'est pas dans votre salon", ephemeral=True)
                         return
-                    try:
-                        if self.action == 'kick':
-                            await member.move_to(None, reason="Expulsion du salon vocal temp")
-                        elif self.action == 'mute':
-                            await member.edit(mute=True, reason="Mute salon vocal temp")
-                        elif self.action == 'unmute':
-                            await member.edit(mute=False, reason="Unmute salon vocal temp")
-                        await inter.response.edit_message(view=self.outer_view)
-                    except Exception:
-                        await inter.response.send_message("Action impossible.", ephemeral=True)
+                    # Show ephemeral confirmation view
+                    await inter.response.send_message(
+                        content=f"Confirmer l'action {self.action} sur {member.mention} ?",
+                        view=self.outer_view._ConfirmActionView(self.outer_view, self.action, self.voice_id, member.id),
+                        ephemeral=True,
+                    )
                 select.callback = on_select  # type: ignore[assignment]
                 return select
 
@@ -723,7 +871,7 @@ class VoiceTemp(commands.Cog):
             if mask is None or not has_flag(mask, PERM_KICK):
                 await inter.response.send_message("Action non autorisée.", ephemeral=True)
                 return
-            await inter.response.edit_message(view=_SelectMemberView(self, 'kick', vid))
+            await inter.response.send_message(view=_SelectMemberView(self, 'kick', vid), ephemeral=True, content="Choisissez un membre à expulser")
 
         @discord.ui.button(label="Mute", style=discord.ButtonStyle.secondary, custom_id="voctemp:mute:0")
         async def btn_mute(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
@@ -735,7 +883,7 @@ class VoiceTemp(commands.Cog):
             if mask is None or not has_flag(mask, PERM_MUTE):
                 await inter.response.send_message("Action non autorisée.", ephemeral=True)
                 return
-            await inter.response.edit_message(view=_SelectMemberView(self, 'mute', vid))
+            await inter.response.send_message(view=_SelectMemberView(self, 'mute', vid), ephemeral=True, content="Choisissez un membre à mute")
 
         @discord.ui.button(label="Unmute", style=discord.ButtonStyle.secondary, custom_id="voctemp:unmute:0")
         async def btn_unmute(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
@@ -747,7 +895,7 @@ class VoiceTemp(commands.Cog):
             if mask is None or not has_flag(mask, PERM_MUTE):
                 await inter.response.send_message("Action non autorisée.", ephemeral=True)
                 return
-            await inter.response.edit_message(view=_SelectMemberView(self, 'unmute', vid))
+            await inter.response.send_message(view=_SelectMemberView(self, 'unmute', vid), ephemeral=True, content="Choisissez un membre à unmute")
 
     def build_control_view(self, owner_id: int, perms_mask: int, voice_id: int) -> discord.ui.View:
         # Backward compat if needed elsewhere, but we'll primarily use ControlPersistentView
