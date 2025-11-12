@@ -112,7 +112,9 @@ class PermsToggles(discord.ui.View):
     def _make_confirm(self) -> discord.ui.Button:
         async def on_confirm(interaction: discord.Interaction):
             await interaction.response.send_message("Permissions enregistrées.", ephemeral=True)
-        return discord.ui.Button(label="Confirmer", style=discord.ButtonStyle.primary, custom_id="perm:confirm", row=4, disabled=False, callback=on_confirm)  # type: ignore[arg-type]
+        b = discord.ui.Button(label="Confirmer", style=discord.ButtonStyle.primary, custom_id="perm:confirm", row=4, disabled=False)
+        b.callback = on_confirm  # type: ignore[assignment]
+        return b
 
 
 def build_config_embed(state: HubConfigState) -> discord.Embed:
@@ -163,17 +165,21 @@ class VoiceTemp(commands.Cog):
         # Register persistent control view so buttons survive restarts
         self.bot.add_view(self.ControlPersistentView(self))
 
-    # ---------------- Admin (prefix): +voctemp ----------------
-    @commands.command(name="voctemp", help="Créer un hub de salons vocaux temporaires (admin)")
+    # ---------------- Admin (prefix): +hube group ----------------
+    @commands.group(name="hube", invoke_without_command=True, help="Gestion des hubs vocaux temporaires (admin)")
     @is_admin()
-    async def voctemp(self, ctx: commands.Context):
+    async def hube(self, ctx: commands.Context):
+        await ctx.send(embed=success_embed("Hube", "Utilisez `+hube create` pour créer un hub ou `+hube manage {id}` pour modifier."))
+
+    @hube.command(name="create", help="Créer un hub de salons vocaux temporaires (admin)")
+    @is_admin()
+    async def hube_create(self, ctx: commands.Context):
         state = HubConfigState(guild_id=ctx.guild.id)  # type: ignore[union-attr]
         await self._run_hub_wizard(ctx, state)
 
-    # ---------------- Admin (prefix): +voctempmodif {id} ----------------
-    @commands.command(name="voctempmodif", help="Modifier un hub voc temp: +voctempmodif {id}")
+    @hube.command(name="manage", help="Modifier un hub voc temp: +hube manage {id}")
     @is_admin()
-    async def voctempmodif(self, ctx: commands.Context, hub_id: int):
+    async def hube_manage(self, ctx: commands.Context, hub_id: int):
         conn = await ensure_db()
         async with conn.execute(
             "SELECT id, guild_id, category_id, target_category_id, hub_channel_id, name, perms_mask FROM voctemp_hubs WHERE id=? AND guild_id=?",
@@ -306,6 +312,17 @@ class VoiceTemp(commands.Cog):
                 return b
 
         await ctx.send(embed=build_modify_embed(state), view=ModifyMenu(self, hub_id, hub_channel_id, state))
+
+    # ---------------- Legacy wrappers ----------------
+    @commands.command(name="voctemp", help="[Deprecated] Utilisez +hube create (création hub)")
+    @is_admin()
+    async def voctemp(self, ctx: commands.Context):
+        await self.hube_create(ctx)
+
+    @commands.command(name="voctempmodif", help="[Deprecated] Utilisez +hube manage {id} (modification hub)")
+    @is_admin()
+    async def voctempmodif(self, ctx: commands.Context, hub_id: int):
+        await self.hube_manage(ctx, hub_id)
 
     async def _run_hub_wizard(self, ctx: commands.Context, state: HubConfigState):
         author_id = ctx.author.id
