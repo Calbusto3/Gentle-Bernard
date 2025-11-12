@@ -10,6 +10,7 @@ from discord.ext import commands
 
 from utils.config import config
 from utils.logging_setup import setup_logging
+from utils.keep_alive import start_keep_alive, stop_keep_alive
 
 
 COGS_FOLDER = Path(__file__).parent / "cogs"
@@ -65,8 +66,18 @@ async def main() -> None:
 
     bot = CIGamingBot()
 
+    runner = None
+    try:
+        runner = await start_keep_alive()
+    except Exception as e:
+        # Le bot peut démarrer même si le keep-alive échoue
+        logging.getLogger(__name__).warning(f"Keep-alive non démarré: {e}")
+
     async with bot:
-        await bot.start(token)
+        try:
+            await bot.start(token)
+        finally:
+            await stop_keep_alive(runner)
 
 
 if __name__ == "__main__":
