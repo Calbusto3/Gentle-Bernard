@@ -22,15 +22,18 @@ WELCOME_TOP_MESSAGES = [
     "Welcome petit être",
     "Un nouveau membre atterrit",
     "Approche, n'aie pas peur",
-    "Je te vois, petit être",
+    "Je te vois, tu as là, petit être",
     "Entre, la mare est tiède",
+    "Esquis, ne quitte plus jamais ce serveur.",
+    "On t'attendais",
+    "Content de te voir (c'est faux)"
 ]
 
 GOODBYE_TITLES = [
     "Au revoir",
-    "Déconnexion…",
+    "Vient juste de perdre tout son aura.",
     "Un départ",
-    "Perte de signal",
+    "Une perte",
     "Un être s'en va",
 ]
 

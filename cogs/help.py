@@ -16,7 +16,7 @@ HELP_ENTRIES = [
         "label": "lock -> verrouiller le salon",
         "type": "prefix",
         "title": "lock",
-        "summary": "Verrouille le salon courant.",
+        "summary": "Verrouille un salon textuel pour retirer la permission aux membres d'écrir.",
         "usage": "+lock [all]",
         "details": (
             "Sans argument: seul le staff peut parler.\n"
@@ -30,7 +30,7 @@ HELP_ENTRIES = [
         "label": "unlock -> déverrouiller le salon",
         "type": "prefix",
         "title": "unlock",
-        "summary": "Déverrouille le salon pour tous.",
+        "summary": "Déverrouiller un salon verrouillé pour redonner la permission aux membres d'écrir.",
         "usage": "+unlock",
         "details": "Rétablit les permissions de tout le monde dans le salon.",
         "examples": ["+unlock"],
@@ -41,7 +41,7 @@ HELP_ENTRIES = [
         "label": "hide -> cacher le salon",
         "type": "prefix",
         "title": "hide",
-        "summary": "Cache le salon courant.",
+        "summary": "Cache un salon de sorte que plus aucun membre puisse le voir.",
         "usage": "+hide [all]",
         "details": (
             "Sans argument: seul le staff voit le salon.\n"
@@ -55,7 +55,7 @@ HELP_ENTRIES = [
         "label": "unhide -> afficher le salon",
         "type": "prefix",
         "title": "unhide",
-        "summary": "Affiche le salon pour tous.",
+        "summary": "Rétablir la visibilité d'un salon caché.",
         "usage": "+unhide",
         "details": "Rétablit la visibilité du salon pour tout le monde.",
         "examples": ["+unhide"],
@@ -66,7 +66,7 @@ HELP_ENTRIES = [
         "label": "mute -> rendre muet un membre (timeout)",
         "type": "both",
         "title": "mute",
-        "summary": "Applique un timeout à un membre.",
+        "summary": "Muter un membre.",
         "usage": "+mute [membre?] [durée?] [raison?] | /mute membre [durée] [raison]",
         "details": (
             "Préfixe: si aucun membre n'est précisé, cible le dernier auteur du salon.\n"
@@ -80,7 +80,7 @@ HELP_ENTRIES = [
         "label": "unmute -> retirer le mute",
         "type": "both",
         "title": "unmute",
-        "summary": "Retire le timeout d'un membre.",
+        "summary": "Retire le mute d'un membre.",
         "usage": "+unmute [membre?] | /unmute membre",
         "details": "Préfixe: si aucun membre n'est précisé, cible le dernier auteur du salon.",
         "examples": ["+unmute", "/unmute membre:@Membre"],
@@ -146,7 +146,7 @@ HELP_ENTRIES = [
         "label": "confesser -> envoyer une confession",
         "type": "slash",
         "title": "confesser",
-        "summary": "Ouvre un formulaire pour envoyer une confession anonyme.",
+        "summary": "Faire une confession anonyme.",
         "usage": "/confesser",
         "details": "Crée un message anonyme numéroté avec des boutons (répondre, signaler, supprimer). Cooldown léger et logs au staff.",
         "examples": ["/confesser"],

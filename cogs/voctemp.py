@@ -191,7 +191,32 @@ class VoiceTemp(commands.Cog):
         # Register persistent control view so buttons survive restarts
         self.bot.add_view(self.ControlPersistentView(self))
 
-    # Admin commands intentionally disabled for now (buttons-only UX)
+    # ---------------- Admin (prefix): +voctemp ----------------
+    @commands.command(name="voctemp", help="Créer un hub de salons vocaux temporaires (admin)")
+    @is_admin()
+    async def voctemp(self, ctx: commands.Context):
+        state = HubConfigState(guild_id=ctx.guild.id)  # type: ignore[union-attr]
+        view = HubWizard(state)
+        await ctx.send(embed=build_config_embed(state), view=view)
+
+    # ---------------- Admin (prefix): +voctempmodif {id} ----------------
+    @commands.command(name="voctempmodif", help="Modifier un hub voc temp: +voctempmodif {id}")
+    @is_admin()
+    async def voctempmodif(self, ctx: commands.Context, hub_id: int):
+        conn = await ensure_db()
+        async with conn.execute(
+            "SELECT id, guild_id, category_id, hub_channel_id, name, perms_mask FROM voctemp_hubs WHERE id=? AND guild_id=\n?",
+            (hub_id, ctx.guild.id),  # type: ignore[union-attr]
+        ) as cur:
+            row = await cur.fetchone()
+        await conn.close()
+        if not row:
+            await ctx.send(embed=error_embed("Hub introuvable"))
+            return
+        _, guild_id, category_id, hub_channel_id, name, perms_mask = row
+        state = HubConfigState(guild_id=guild_id, category_id=category_id, name=name, perms_mask=int(perms_mask))
+        view = HubWizard(state)
+        await ctx.send(embed=build_config_embed(state), view=view)
 
     # ---------------- Helpers DB ----------------
     async def get_perms_mask_for_voice(self, guild_id: int, voice_id: int) -> Optional[int]:

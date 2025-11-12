@@ -362,12 +362,14 @@ class Confessions(commands.Cog):
         if conf.author_id != interaction.user.id:
             await interaction.response.send_message("Seul l'auteur peut supprimer.", ephemeral=True)
             return
-        if bool(delete_reason) == bool(new_content):
+        # Autoriser la suppression sans raison. Erreur seulement si les deux champs sont fournis.
+        if delete_reason and new_content:
             await interaction.response.send_message("Indiquez soit une raison de suppression, soit un nouveau contenu (pas les deux).", ephemeral=True)
             return
         # Récupérer le message
         try:
-            channel = interaction.guild.get_channel(conf.channel_id)
+            # Supporter les threads: get_channel_or_thread retourne aussi les threads
+            channel = interaction.guild.get_channel_or_thread(conf.channel_id)
             msg: Optional[discord.Message] = None
             if isinstance(channel, (discord.TextChannel, discord.Thread)):
                 msg = await channel.fetch_message(conf.message_id)
