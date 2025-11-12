@@ -166,20 +166,20 @@ class VoiceTemp(commands.Cog):
         self.bot.add_view(self.ControlPersistentView(self))
 
     # ---------------- Admin (prefix): +hube group ----------------
-    @commands.group(name="hube", invoke_without_command=True, help="Gestion des hubs vocaux temporaires (admin)")
+    @commands.group(name="hub", invoke_without_command=True, help="Gestion des hubs vocaux temporaires (admin)")
     @is_admin()
-    async def hube(self, ctx: commands.Context):
-        await ctx.send(embed=success_embed("Hube", "Utilisez `+hube create` pour créer un hub ou `+hube manage {id}` pour modifier."))
+    async def hub(self, ctx: commands.Context):
+        await ctx.send(embed=success_embed("Hub", "Utilisez `+hub create` pour créer un hub ou `+hub manage {id}` pour modifier."))
 
-    @hube.command(name="create", help="Créer un hub de salons vocaux temporaires (admin)")
+    @hub.command(name="create", help="Créer un hub de salons vocaux temporaires (admin)")
     @is_admin()
-    async def hube_create(self, ctx: commands.Context):
+    async def hub_create(self, ctx: commands.Context):
         state = HubConfigState(guild_id=ctx.guild.id)  # type: ignore[union-attr]
         await self._run_hub_wizard(ctx, state)
 
-    @hube.command(name="manage", help="Modifier un hub voc temp: +hube manage {id}")
+    @hub.command(name="manage", help="Modifier un hub voc temp: +hub manage {id}")
     @is_admin()
-    async def hube_manage(self, ctx: commands.Context, hub_id: int):
+    async def hub_manage(self, ctx: commands.Context, hub_id: int):
         conn = await ensure_db()
         async with conn.execute(
             "SELECT id, guild_id, category_id, target_category_id, hub_channel_id, name, perms_mask FROM voctemp_hubs WHERE id=? AND guild_id=?",
@@ -317,12 +317,12 @@ class VoiceTemp(commands.Cog):
     @commands.command(name="voctemp", help="[Deprecated] Utilisez +hube create (création hub)")
     @is_admin()
     async def voctemp(self, ctx: commands.Context):
-        await self.hube_create(ctx)
+        await self.hub_create(ctx)
 
     @commands.command(name="voctempmodif", help="[Deprecated] Utilisez +hube manage {id} (modification hub)")
     @is_admin()
     async def voctempmodif(self, ctx: commands.Context, hub_id: int):
-        await self.hube_manage(ctx, hub_id)
+        await self.hub_manage(ctx, hub_id)
 
     async def _run_hub_wizard(self, ctx: commands.Context, state: HubConfigState):
         author_id = ctx.author.id
@@ -577,6 +577,24 @@ class VoiceTemp(commands.Cog):
             # When instantiated without specific ids (during startup), buttons still exist to capture custom_ids
             # Buttons will parse voice_id from custom_id
 
+        def _set_lock_button_style(self, guild: Optional[discord.Guild], voice_id: int) -> None:
+            try:
+                if not guild:
+                    return
+                vc = guild.get_channel(voice_id)
+                if not isinstance(vc, discord.VoiceChannel):
+                    return
+                everyone = guild.default_role
+                ow = vc.overwrites_for(everyone)
+                locked = ow.connect is False
+                # Find lock button and set style: green if locked, gray if unlocked
+                for c in self.children:
+                    if isinstance(c, discord.ui.Button) and c.custom_id and c.custom_id.startswith("voctemp:lock:"):
+                        c.style = discord.ButtonStyle.success if locked else discord.ButtonStyle.secondary
+                        break
+            except Exception:
+                pass
+
         async def _ensure_owner(self, inter: discord.Interaction, voice_id: int) -> Optional[discord.Member]:
             if not inter.guild:
                 await inter.response.send_message("Contexte invalide.", ephemeral=True)
@@ -665,7 +683,7 @@ class VoiceTemp(commands.Cog):
                 vid = self._voice_id_from_message(inter)
             return action, vid
 
-        @discord.ui.button(label="Renommer", style=discord.ButtonStyle.primary, custom_id="voctemp:rename:0")
+        @discord.ui.button(label="Renommer", style=discord.ButtonStyle.primary, custom_id="voctemp:rename:0", row=1)
         async def btn_rename(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
             action, vid = self._get_ids(inter.data.get('custom_id', ''), inter)  # type: ignore[attr-defined]
             if action != 'rename' or vid == 0:
@@ -695,7 +713,7 @@ class VoiceTemp(commands.Cog):
             self_outer = self
             await inter.response.send_modal(RenameModal())
 
-        @discord.ui.button(label="Limiter", style=discord.ButtonStyle.secondary, custom_id="voctemp:limit:0")
+        @discord.ui.button(label="Limiter", style=discord.ButtonStyle.secondary, custom_id="voctemp:limit:0", row=1)
         async def btn_limit(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
             action, vid = self._get_ids(inter.data.get('custom_id', ''), inter)  # type: ignore[attr-defined]
             if action != 'limit' or vid == 0:
@@ -729,22 +747,22 @@ class VoiceTemp(commands.Cog):
             self_outer = self
             await inter.response.send_modal(LimitModal())
 
-        @discord.ui.button(label="Lock/Unlock", style=discord.ButtonStyle.secondary, custom_id="voctemp:lock:0")
+        @discord.ui.button(label="Lock/Unlock", style=discord.ButtonStyle.secondary, custom_id="voctemp:lock:0", row=1)
         async def btn_lock(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
             action, vid = self._get_ids(inter.data.get('custom_id', ''), inter)  # type: ignore[attr-defined]
             if action != 'lock' or vid == 0:
-                await inter.response.send_message("Panneau non initialisé.", ephemeral=True)
+                await inter.response.send_message("Panneau non initialisé (lock).", ephemeral=True)
                 return
             mask = await self.outer.get_perms_mask_for_voice(inter.guild.id, vid) if inter.guild else None
             if mask is None or not has_flag(mask, PERM_LOCK):
-                await inter.response.send_message("Action non autorisée.", ephemeral=True)
+                await inter.response.send_message("Action non autorisée (verrou).", ephemeral=True)
                 return
             owner = await self._ensure_owner(inter, vid)
             if not owner or not inter.guild:
                 return
             vc = inter.guild.get_channel(vid)
             if not isinstance(vc, discord.VoiceChannel):
-                await inter.response.send_message("Salon introuvable.", ephemeral=True)
+                await inter.response.send_message("Salon introuvable (lock).", ephemeral=True)
                 return
             everyone = inter.guild.default_role
             ow = vc.overwrites_for(everyone)
@@ -752,11 +770,18 @@ class VoiceTemp(commands.Cog):
             ow.connect = None if locked else False
             try:
                 await vc.set_permissions(everyone, overwrite=ow)
+                # Refresh lock button style based on new state
+                self._set_lock_button_style(inter.guild, vid)
                 await inter.response.send_message("Salon verrouillé" if not locked else "Salon déverrouillé", ephemeral=True)
+                # Try to refresh the panel view (if we have a message context)
+                try:
+                    await inter.message.edit(view=self)
+                except Exception:
+                    pass
             except Exception:
-                await inter.response.send_message("Action impossible.", ephemeral=True)
+                await inter.response.send_message("Action impossible (lock).", ephemeral=True)
 
-        @discord.ui.button(label="Passer la propriété", style=discord.ButtonStyle.success, custom_id="voctemp:transfer:0")
+        @discord.ui.button(label="Passer la propriété", style=discord.ButtonStyle.success, custom_id="voctemp:transfer:0", row=2)
         async def btn_transfer(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
             action, vid = self._get_ids(inter.data.get('custom_id', ''), inter)  # type: ignore[attr-defined]
             if action != 'transfer' or vid == 0:
@@ -908,39 +933,39 @@ class VoiceTemp(commands.Cog):
                 select.callback = on_select  # type: ignore[assignment]
                 return select
 
-        @discord.ui.button(label="Expulser", style=discord.ButtonStyle.danger, custom_id="voctemp:kick:0")
+        @discord.ui.button(label="Expulser", style=discord.ButtonStyle.danger, custom_id="voctemp:kick:0", row=0)
         async def btn_kick(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
             action, vid = self._get_ids(inter.data.get('custom_id', ''), inter)  # type: ignore[attr-defined]
             if action != 'kick' or vid == 0:
-                await inter.response.send_message("Panneau non initialisé.", ephemeral=True)
+                await inter.response.send_message("Panneau non initialisé (kick).", ephemeral=True)
                 return
             mask = await self.outer.get_perms_mask_for_voice(inter.guild.id, vid) if inter.guild else None
             if mask is None or not has_flag(mask, PERM_KICK):
-                await inter.response.send_message("Action non autorisée.", ephemeral=True)
+                await inter.response.send_message("Action non autorisée (kick).", ephemeral=True)
                 return
             await inter.response.send_message(view=_SelectMemberView(self, 'kick', vid), ephemeral=True, content="Choisissez un membre à expulser")
 
-        @discord.ui.button(label="Mute", style=discord.ButtonStyle.secondary, custom_id="voctemp:mute:0")
+        @discord.ui.button(label="Mute", style=discord.ButtonStyle.secondary, custom_id="voctemp:mute:0", row=0)
         async def btn_mute(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
             action, vid = self._get_ids(inter.data.get('custom_id', ''), inter)  # type: ignore[attr-defined]
             if action != 'mute' or vid == 0:
-                await inter.response.send_message("Panneau non initialisé.", ephemeral=True)
+                await inter.response.send_message("Panneau non initialisé (mute).", ephemeral=True)
                 return
             mask = await self.outer.get_perms_mask_for_voice(inter.guild.id, vid) if inter.guild else None
             if mask is None or not has_flag(mask, PERM_MUTE):
-                await inter.response.send_message("Action non autorisée.", ephemeral=True)
+                await inter.response.send_message("Action non autorisée (mute).", ephemeral=True)
                 return
             await inter.response.send_message(view=_SelectMemberView(self, 'mute', vid), ephemeral=True, content="Choisissez un membre à mute")
 
-        @discord.ui.button(label="Unmute", style=discord.ButtonStyle.secondary, custom_id="voctemp:unmute:0")
+        @discord.ui.button(label="Unmute", style=discord.ButtonStyle.secondary, custom_id="voctemp:unmute:0", row=0)
         async def btn_unmute(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
             action, vid = self._get_ids(inter.data.get('custom_id', ''), inter)  # type: ignore[attr-defined]
             if action != 'unmute' or vid == 0:
-                await inter.response.send_message("Panneau non initialisé.", ephemeral=True)
+                await inter.response.send_message("Panneau non initialisé (unmute).", ephemeral=True)
                 return
             mask = await self.outer.get_perms_mask_for_voice(inter.guild.id, vid) if inter.guild else None
             if mask is None or not has_flag(mask, PERM_MUTE):
-                await inter.response.send_message("Action non autorisée.", ephemeral=True)
+                await inter.response.send_message("Action non autorisée (unmute).", ephemeral=True)
                 return
             await inter.response.send_message(view=_SelectMemberView(self, 'unmute', vid), ephemeral=True, content="Choisissez un membre à unmute")
 

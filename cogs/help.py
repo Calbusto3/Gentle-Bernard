@@ -175,31 +175,31 @@ HELP_ENTRIES = [
         "permissions": "Staff",
     },
     {
-        "key": "hube create",
-        "label": "hube create -> créer un hub voc temp",
+        "key": "hub create",
+        "label": "hub create -> créer un hub voc temp",
         "type": "prefix",
-        "title": "hube create",
+        "title": "hub create",
         "summary": "Assistant multi-étapes pour créer un hub de salons vocaux temporaires.",
-        "usage": "+hube create",
+        "usage": "+hub create",
         "details": (
             "Choix du nom, catégorie du hub, catégorie de création des salons, et permissions du propriétaire.\n"
             "Remplace +voctemp."
         ),
-        "examples": ["+hube create"],
+        "examples": ["+hub create"],
         "permissions": "Admin",
     },
     {
-        "key": "hube manage",
-        "label": "hube manage -> modifier un hub voc temp",
+        "key": "hub manage",
+        "label": "hub manage -> modifier un hub voc temp",
         "type": "prefix",
-        "title": "hube manage",
+        "title": "hub manage",
         "summary": "Interface pour renommer le hub et modifier les permissions.",
-        "usage": "+hube manage {id}",
+        "usage": "+hub manage {id}",
         "details": (
             "Boutons: modifier le nom (prompt), modifier les permissions (toggles).\n"
             "Remplace +voctempmodif."
         ),
-        "examples": ["+hube manage 1"],
+        "examples": ["+hub manage 1"],
         "permissions": "Admin",
     },
     {
