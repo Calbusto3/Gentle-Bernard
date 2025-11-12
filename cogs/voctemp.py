@@ -357,7 +357,7 @@ class VoiceTemp(commands.Cog):
         # Créer salon texte compagnon
         text = await guild.create_text_channel(f"salon-de-{owner.name}"[:90], category=category, reason="Compagnon salon vocal temp")
         # Envoyer panneau
-        panel = await text.send(embed=self.build_control_embed(owner, perms_mask, voice), view=self.ControlPersistentView(self, owner_id=owner.id, perms_mask=perms_mask, voice_id=voice.id))
+        panel = await text.send(content=owner.mention, embed=self.build_control_embed(owner, perms_mask, voice), view=self.ControlPersistentView(self, owner_id=owner.id, perms_mask=perms_mask, voice_id=voice.id), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
         conn = await ensure_db()
         await conn.execute(
             "INSERT INTO voctemp_rooms(guild_id, hub_id, owner_id, voice_channel_id, text_channel_id, control_message_id, active) VALUES(?,?,?,?,?,?,1)",
@@ -409,17 +409,38 @@ class VoiceTemp(commands.Cog):
             if not row or int(row[0]) != member.id:
                 await inter.response.send_message("Seul le propriétaire peut utiliser ce panneau.", ephemeral=True)
                 return None
+            # Require the owner to be currently connected in the target voice channel
+            if not member.voice or not member.voice.channel or member.voice.channel.id != voice_id:
+                await inter.response.send_message("Vous devez être dans votre salon vocal pour utiliser ce panneau.", ephemeral=True)
+                return None
             return member
 
-        def _get_ids(self, custom_id: str) -> Tuple[str, int]:
+        def _voice_id_from_message(self, inter: discord.Interaction) -> int:
+            try:
+                msg = inter.message
+                if not msg or not msg.embeds:
+                    return 0
+                emb = msg.embeds[0]
+                for f in emb.fields:
+                    if f.name.lower() == "salon vocal":
+                        # value like <#123456789>
+                        digits = "".join(ch for ch in f.value if ch.isdigit())
+                        return int(digits) if digits else 0
+            except Exception:
+                return 0
+            return 0
+
+        def _get_ids(self, custom_id: str, inter: Optional[discord.Interaction] = None) -> Tuple[str, int]:
             parts = custom_id.split(":")
             action = parts[1] if len(parts) > 1 else ""
             vid = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else (self.voice_id or 0)
+            if vid == 0 and inter is not None:
+                vid = self._voice_id_from_message(inter)
             return action, vid
 
         @discord.ui.button(label="Renommer", style=discord.ButtonStyle.primary, custom_id="voctemp:rename:0")
         async def btn_rename(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
-            action, vid = self._get_ids(inter.data.get('custom_id', ''))  # type: ignore[attr-defined]
+            action, vid = self._get_ids(inter.data.get('custom_id', ''), inter)  # type: ignore[attr-defined]
             if action != 'rename' or vid == 0:
                 await inter.response.send_message("Panneau non initialisé.", ephemeral=True)
                 return
@@ -449,7 +470,7 @@ class VoiceTemp(commands.Cog):
 
         @discord.ui.button(label="Limiter", style=discord.ButtonStyle.secondary, custom_id="voctemp:limit:0")
         async def btn_limit(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
-            action, vid = self._get_ids(inter.data.get('custom_id', ''))  # type: ignore[attr-defined]
+            action, vid = self._get_ids(inter.data.get('custom_id', ''), inter)  # type: ignore[attr-defined]
             if action != 'limit' or vid == 0:
                 await inter.response.send_message("Panneau non initialisé.", ephemeral=True)
                 return
@@ -483,7 +504,7 @@ class VoiceTemp(commands.Cog):
 
         @discord.ui.button(label="Lock/Unlock", style=discord.ButtonStyle.secondary, custom_id="voctemp:lock:0")
         async def btn_lock(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
-            action, vid = self._get_ids(inter.data.get('custom_id', ''))  # type: ignore[attr-defined]
+            action, vid = self._get_ids(inter.data.get('custom_id', ''), inter)  # type: ignore[attr-defined]
             if action != 'lock' or vid == 0:
                 await inter.response.send_message("Panneau non initialisé.", ephemeral=True)
                 return
@@ -510,7 +531,7 @@ class VoiceTemp(commands.Cog):
 
         @discord.ui.button(label="Passer la propriété", style=discord.ButtonStyle.success, custom_id="voctemp:transfer:0")
         async def btn_transfer(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
-            action, vid = self._get_ids(inter.data.get('custom_id', ''))  # type: ignore[attr-defined]
+            action, vid = self._get_ids(inter.data.get('custom_id', ''), inter)  # type: ignore[attr-defined]
             if action != 'transfer' or vid == 0:
                 await inter.response.send_message("Panneau non initialisé.", ephemeral=True)
                 return
@@ -575,7 +596,7 @@ class VoiceTemp(commands.Cog):
 
         @discord.ui.button(label="Expulser", style=discord.ButtonStyle.danger, custom_id="voctemp:kick:0")
         async def btn_kick(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
-            action, vid = self._get_ids(inter.data.get('custom_id', ''))  # type: ignore[attr-defined]
+            action, vid = self._get_ids(inter.data.get('custom_id', ''), inter)  # type: ignore[attr-defined]
             if action != 'kick' or vid == 0:
                 await inter.response.send_message("Panneau non initialisé.", ephemeral=True)
                 return
@@ -587,7 +608,7 @@ class VoiceTemp(commands.Cog):
 
         @discord.ui.button(label="Mute", style=discord.ButtonStyle.secondary, custom_id="voctemp:mute:0")
         async def btn_mute(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
-            action, vid = self._get_ids(inter.data.get('custom_id', ''))  # type: ignore[attr-defined]
+            action, vid = self._get_ids(inter.data.get('custom_id', ''), inter)  # type: ignore[attr-defined]
             if action != 'mute' or vid == 0:
                 await inter.response.send_message("Panneau non initialisé.", ephemeral=True)
                 return
@@ -599,7 +620,7 @@ class VoiceTemp(commands.Cog):
 
         @discord.ui.button(label="Unmute", style=discord.ButtonStyle.secondary, custom_id="voctemp:unmute:0")
         async def btn_unmute(self, inter: discord.Interaction, btn: discord.ui.Button):  # type: ignore[override]
-            action, vid = self._get_ids(inter.data.get('custom_id', ''))  # type: ignore[attr-defined]
+            action, vid = self._get_ids(inter.data.get('custom_id', ''), inter)  # type: ignore[attr-defined]
             if action != 'unmute' or vid == 0:
                 await inter.response.send_message("Panneau non initialisé.", ephemeral=True)
                 return
