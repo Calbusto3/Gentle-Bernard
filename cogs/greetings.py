@@ -4,29 +4,55 @@ from typing import Optional
 
 import discord
 from discord.ext import commands
+import random
 
 from utils.config import config
 
 
+WELCOME_TITLES = [
+    "Bienvenue !",
+    "Salut à toi !",
+    "On a un nouveau !",
+    "Nouveau module détecté",
+    "Oh, un invité !",
+    "Encore un cobaye",
+]
+
+WELCOME_TOP_MESSAGES = [
+    "Welcome petit être",
+    "Un nouveau membre atterrit",
+    "Approche, n'aie pas peur",
+    "Je te vois, petit être",
+    "Entre, la mare est tiède",
+]
+
+GOODBYE_TITLES = [
+    "Au revoir",
+    "Déconnexion…",
+    "Un départ",
+    "Perte de signal",
+    "Un être s'en va",
+]
+
 def make_welcome_embed(member: discord.Member) -> discord.Embed:
-    e = discord.Embed(
-        title="Bienvenue !",
-        description=f"{member.mention} a rejoint le serveur.",
-        color=discord.Color.green(),
+    title = random.choice(WELCOME_TITLES)
+    description = (
+        "Bienvenue à toi cher membre, sache que je suis supérieure à toi ; je te souhaite tout de même un agréable séjour ici, surtout que tu n'as pas le droit de partir, bref."
     )
+    e = discord.Embed(title=title, description=description, color=discord.Color.green())
     e.set_thumbnail(url=member.display_avatar.url)
     e.add_field(name="Utilisateur", value=f"{member} (ID: {member.id})")
+    e.set_footer(text="Gentle Bernard")
     return e
 
 
 def make_goodbye_embed(member: discord.Member) -> discord.Embed:
-    e = discord.Embed(
-        title="Au revoir",
-        description=f"{member.mention} a quitté le serveur.",
-        color=discord.Color.red(),
-    )
+    title = random.choice(GOODBYE_TITLES)
+    description = f"{member.display_name} part. Quelle idignité, ça m'écoeure"
+    e = discord.Embed(title=title, description=description, color=discord.Color.red())
     e.set_thumbnail(url=member.display_avatar.url)
     e.add_field(name="Utilisateur", value=f"{member} (ID: {member.id})")
+    e.set_footer(text="Gentle Bernard")
     return e
 
 
@@ -48,7 +74,8 @@ class Greetings(commands.Cog):
         if not ch:
             return
         try:
-            await ch.send(embed=make_welcome_embed(member))
+            top = f"{random.choice(WELCOME_TOP_MESSAGES)} {member.mention}"
+            await ch.send(content=top, embed=make_welcome_embed(member))
         except Exception:
             pass
 
@@ -60,7 +87,7 @@ class Greetings(commands.Cog):
         if not ch:
             return
         try:
-            await ch.send(embed=make_goodbye_embed(member))
+            await ch.send(content="Et une perte.", embed=make_goodbye_embed(member))
         except Exception:
             pass
 

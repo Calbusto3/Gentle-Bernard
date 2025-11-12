@@ -41,7 +41,7 @@ class Basic(commands.Cog):
         embed = discord.Embed(title="Statut du bot", color=discord.Color.green())
         embed.add_field(name="Connecté en tant que", value=f"{self.bot.user} ({self.bot.user.id})", inline=False)
         embed.add_field(name="Guildes", value=str(len(self.bot.guilds)))
-        embed.set_footer(text="CIGaming Bot")
+        embed.set_footer(text="Gentle Bernard")
         await ctx.send(embed=embed)
 
 

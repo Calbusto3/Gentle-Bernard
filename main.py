@@ -21,6 +21,7 @@ class CIGamingBot(commands.Bot):
         intents.guilds = True
         intents.messages = True
         intents.members = True  # For member info and autocomplete
+        intents.voice_states = True  # For voice temp system
         intents.message_content = True  # Requires privileged intent enabled in the Developer Portal
 
         super().__init__(command_prefix=config.prefix, intents=intents, help_command=None)

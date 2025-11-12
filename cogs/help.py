@@ -142,6 +142,39 @@ HELP_ENTRIES = [
         "permissions": "Staff",
     },
     {
+        "key": "confesser",
+        "label": "confesser -> envoyer une confession",
+        "type": "slash",
+        "title": "confesser",
+        "summary": "Ouvre un formulaire pour envoyer une confession anonyme.",
+        "usage": "/confesser",
+        "details": "Crée un message anonyme numéroté avec des boutons (répondre, signaler, supprimer). Cooldown léger et logs au staff.",
+        "examples": ["/confesser"],
+        "permissions": "Aucune pour confesser",
+    },
+    {
+        "key": "banconfession",
+        "label": "banconfession -> bannir des confessions",
+        "type": "slash",
+        "title": "banconfession",
+        "summary": "Empêche un membre d'utiliser le système de confessions.",
+        "usage": "/banconfession membre [raison]",
+        "details": "Le membre ne peut plus envoyer ou répondre aux confessions. Envoi d'un DM et log.",
+        "examples": ["/banconfession membre:@User raison:abus"],
+        "permissions": "Staff",
+    },
+    {
+        "key": "unbanconfession",
+        "label": "unbanconfession -> rétablir l'accès",
+        "type": "slash",
+        "title": "unbanconfession",
+        "summary": "Rend l'accès aux confessions à un membre banni.",
+        "usage": "/unbanconfession membre",
+        "details": "Envoi d'un DM et log au staff.",
+        "examples": ["/unbanconfession membre:@User"],
+        "permissions": "Staff",
+    },
+    {
         "key": "user info",
         "label": "user info -> informations sur un utilisateur",
         "type": "slash",
@@ -205,7 +238,7 @@ def build_help_embed(entry: dict) -> discord.Embed:
         e.add_field(name="Exemples", value="\n".join(f"`{x}`" for x in entry["examples"]), inline=False)
     if entry.get("permissions"):
         e.add_field(name="Permissions", value=entry["permissions"], inline=False)
-    e.set_footer(text="CIGaming Bot")
+    e.set_footer(text="Gentle Bernard")
     return e
 
 
@@ -218,7 +251,7 @@ def build_welcome_embed(filter_key: str) -> discord.Embed:
         f"Filtre courant: **{filter_key}**."
     )
     e = discord.Embed(title="Aide - Menu", description=description, color=DEFAULT_COLOR)
-    e.set_footer(text="CIGaming Bot")
+    e.set_footer(text="Gentle Bernard")
     return e
 
 
